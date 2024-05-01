@@ -3,6 +3,7 @@ package controllers
 import (
 	"net/http"
 
+	"delivery-service/internal/models"
 	"delivery-service/internal/repository"
 
 	"github.com/gin-gonic/gin"
@@ -26,7 +27,25 @@ func (d *DeliveryController) PostDelivery(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Name parameter is required"})
 		return
 	}
-	// put delivery to database
-	// create order, call post and get methods from order repo
+	_, err := d.deliveryRepo.Add(c, models.Delivery{
+		Name: deliveryName,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	}
 
+	newOrder := models.Order{
+		Name: deliveryName,
+	}
+	_, err = d.orderRepo.Add(c, newOrder)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	}
+
+	_, err = d.orderRepo.Get(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	}
+	// create order, call post and get methods from order repo
+	c.JSON(http.StatusOK, nil)
 }

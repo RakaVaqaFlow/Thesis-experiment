@@ -18,7 +18,7 @@ func NewOrderRepo(db dbOps) *OrderRepo {
 }
 
 // Add specific order
-func (r *OrderRepo) Add(ctx context.Context, order *models.Order) (int64, error) {
+func (r *OrderRepo) Add(ctx context.Context, order models.Order) (int64, error) {
 	var id int64
 	err := r.db.ExecQueryRow(ctx,
 		`INSERT INTO orders(name) VALUES ($1) RETURNING id`,
@@ -40,7 +40,7 @@ func (r *OrderRepo) GetById(ctx context.Context, id int64) (*models.Order, error
 // Get random 100 orders
 func (r *OrderRepo) Get(ctx context.Context) ([]*models.Order, error) {
 	orders := make([]*models.Order, 0)
-	err := r.db.Get(ctx, &orders, `SELECT id,name FROM orders`)
+	err := r.db.Get(ctx, &orders, `SELECT id,name FROM orders ORDER BY RAND() LIMIT 100`)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, repository.ErrObjectNotFound
 	}
@@ -48,7 +48,7 @@ func (r *OrderRepo) Get(ctx context.Context) ([]*models.Order, error) {
 }
 
 // Update order info
-func (r *OrderRepo) Update(ctx context.Context, order *models.Order) (bool, error) {
+func (r *OrderRepo) Update(ctx context.Context, order models.Order) (bool, error) {
 	res, err := r.db.Exec(ctx,
 		`UPDATE orders SET name = $1 WHERE id=$2`,
 		order.Name, order.ID)

@@ -30,7 +30,7 @@ func NewDeliveryRepo(db dbOps) *DeliveryRepo {
 }
 
 // Add specific delivery
-func (r *DeliveryRepo) Add(ctx context.Context, delivery *models.Delivery) (int64, error) {
+func (r *DeliveryRepo) Add(ctx context.Context, delivery models.Delivery) (int64, error) {
 	var id int64
 	err := r.db.ExecQueryRow(ctx,
 		`INSERT INTO deliveries(name) VALUES ($1) RETURNING id`,
@@ -52,7 +52,7 @@ func (r *DeliveryRepo) GetById(ctx context.Context, id int64) (*models.Delivery,
 // Get random 100 deliveries
 func (r *DeliveryRepo) Get(ctx context.Context) ([]*models.Delivery, error) {
 	deliveries := make([]*models.Delivery, 0)
-	err := r.db.Get(ctx, &deliveries, `SELECT id,name FROM deliveries`)
+	err := r.db.Get(ctx, &deliveries, `SELECT id,name FROM deliveries ORDER BY RAND() LIMIT 100`)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, repository.ErrObjectNotFound
 	}
@@ -60,7 +60,7 @@ func (r *DeliveryRepo) Get(ctx context.Context) ([]*models.Delivery, error) {
 }
 
 // Update delivery info
-func (r *DeliveryRepo) Update(ctx context.Context, delivery *models.Delivery) (bool, error) {
+func (r *DeliveryRepo) Update(ctx context.Context, delivery models.Delivery) (bool, error) {
 	res, err := r.db.Exec(ctx,
 		`UPDATE deliveries SET name = $1 WHERE id=$2`,
 		delivery.Name, delivery.ID)

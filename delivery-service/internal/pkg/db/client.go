@@ -7,14 +7,6 @@ import (
 	"github.com/jackc/pgx/v4/pgxpool"
 )
 
-//const (
-//	host     = "localhost"
-//	port     = "5432"
-//	user     = "test"
-//	password = "test"
-//	dbname   = "test"
-//)
-
 // NewDB return instance of Database
 func NewDB(ctx context.Context, host, port, user, password, dbname string) (*Database, error) {
 	dsn := generateDsn(host, port, user, password, dbname)

@@ -16,14 +16,14 @@ func main() {
 	dbHost := os.Getenv("DB_HOST")
 	dbPort := os.Getenv("DB_PORT")
 	dbUser := os.Getenv("DB_USER")
-	dbPass := os.Getenv("DB_PASS")
+	dbPass := os.Getenv("DB_PASSWORD")
 	dbName := os.Getenv("DB_NAME")
 
 	ctx := context.Background()
 
 	dbOps, err := db.NewDB(ctx, dbHost, dbPort, dbUser, dbPass, dbName)
 	if err != nil {
-		fmt.Println("Error while connect to database")
+		fmt.Println(err.Error())
 		return
 	}
 

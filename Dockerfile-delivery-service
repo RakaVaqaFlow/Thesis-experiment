@@ -1,0 +1,24 @@
+# Start from a base image with Go installed
+FROM golang:latest
+
+ENV SERVICE_PATH=delivery-service
+# Set the current working directory inside the container
+WORKDIR /app
+
+# Copy the Go modules files
+COPY ./${SERVICE_PATH}/go.mod ./${SERVICE_PATH}/go.sum /app/
+
+# Download all dependencies
+RUN go mod download
+
+# Copy the rest of the application source code
+COPY ${SERVICE_PATH} /app
+
+# Build the Go application
+RUN go build -o delivery-service ./cmd/main.go
+
+# Expose the port on which the service will run
+EXPOSE 8080
+
+# Command to run the executable
+CMD ["./delivery-service"]

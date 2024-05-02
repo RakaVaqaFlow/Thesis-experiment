@@ -39,8 +39,8 @@ func (r *OrderRepo) GetById(ctx context.Context, id int64) (*models.Order, error
 
 // Get random 100 orders
 func (r *OrderRepo) Get(ctx context.Context) ([]*models.Order, error) {
-	orders := make([]*models.Order, 0)
-	err := r.db.Get(ctx, &orders, `SELECT id,name FROM orders ORDER BY RAND() LIMIT 100`)
+	var orders []*models.Order
+	err := r.db.Select(ctx, &orders, `SELECT id,name FROM orders ORDER BY random() LIMIT 100`)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, repository.ErrObjectNotFound
 	}

@@ -5,22 +5,27 @@ services:
       POSTGRES_DB: ${DB_NAME}
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
+    networks:
+      - mynetwork
     ports:
       - "${DB_PORT}:${DB_PORT}"
   delivery-service:
     environment:
-      DB_HOST: ${DB_HOST}
+      DB_HOST: postgres
       DB_PORT: ${DB_PORT}
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
       DB_NAME: ${DB_NAME}
     build:
       context: .
-      dockerfile: delivery-service/Dockerfile
+      dockerfile: Dockerfile-delivery-service
     restart: always
     depends_on:
       - postgres
     networks:
-      - default
+      - mynetwork
     ports:
       - "8080:8080"
+
+networks:
+  mynetwork:

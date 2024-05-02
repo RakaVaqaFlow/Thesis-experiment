@@ -32,6 +32,7 @@ func (d *DeliveryController) PostDelivery(c *gin.Context) {
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
 
 	newOrder := models.Order{
@@ -40,11 +41,12 @@ func (d *DeliveryController) PostDelivery(c *gin.Context) {
 	_, err = d.orderRepo.Add(c, newOrder)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
-
 	_, err = d.orderRepo.Get(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
 	// create order, call post and get methods from order repo
 	c.JSON(http.StatusOK, nil)

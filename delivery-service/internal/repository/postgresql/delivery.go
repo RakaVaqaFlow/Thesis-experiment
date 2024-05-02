@@ -52,7 +52,7 @@ func (r *DeliveryRepo) GetById(ctx context.Context, id int64) (*models.Delivery,
 // Get random 100 deliveries
 func (r *DeliveryRepo) Get(ctx context.Context) ([]*models.Delivery, error) {
 	deliveries := make([]*models.Delivery, 0)
-	err := r.db.Get(ctx, &deliveries, `SELECT id,name FROM deliveries ORDER BY RAND() LIMIT 100`)
+	err := r.db.Get(ctx, &deliveries, `SELECT id,name FROM deliveries ORDER BY random() LIMIT 100`)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, repository.ErrObjectNotFound
 	}

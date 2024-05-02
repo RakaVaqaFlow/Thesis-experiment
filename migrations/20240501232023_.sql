@@ -1,12 +1,12 @@
 -- +goose Up
 -- +goose StatementBegin
 CREATE TABLE IF NOT EXISTS deliveries (
-    id BIGSERIAL PRIMARY KEY NOT NULL, 
+    id BIGSERIAL PRIMARY KEY, 
     name VARCHAR(100) NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS orders(
-    id BIGSERIAL PRIMARY KEY NOT NULL, 
+    id BIGSERIAL PRIMARY KEY, 
     name VARCHAR(100) NOT NULL DEFAULT ''
 );
 -- +goose StatementEnd

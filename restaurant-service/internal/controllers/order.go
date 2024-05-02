@@ -9,45 +9,69 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type DeliveryController struct {
-	deliveryRepo repository.DeliveryRepo
-	orderRepo    repository.OrderRepo
+type OrderController struct {
+	orderRepo repository.OrderRepo
 }
 
-func NewController(deliveryRepo repository.DeliveryRepo, orderRepo repository.OrderRepo) *DeliveryController {
-	return &DeliveryController{
-		deliveryRepo: deliveryRepo,
-		orderRepo:    orderRepo,
+func NewController(orderRepo repository.OrderRepo) *OrderController {
+	return &OrderController{
+		orderRepo: orderRepo,
 	}
 }
 
-func (d *DeliveryController) PostDelivery(c *gin.Context) {
-	deliveryName := c.Query("name")
-	if deliveryName == "" {
+func (o *OrderController) PostOrder(c *gin.Context) {
+	orderName := c.Query("name")
+	if orderName == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Name parameter is required"})
 		return
 	}
-	_, err := d.deliveryRepo.Add(c, models.Delivery{
-		Name: deliveryName,
+
+	newOrder := models.Order{
+		Name: orderName,
+	}
+	_, err := o.orderRepo.Add(c, newOrder)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, nil)
+}
+
+func (o *OrderController) GetOrder(c *gin.Context) {
+	_, err := o.orderRepo.Get(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, nil)
+}
+
+func (o *OrderController) UpdateOrder(c *gin.Context) {
+	orderName := c.Query("name")
+	if orderName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Name parameter is required"})
+		return
+	}
+	_, err := o.orderRepo.Update(c, models.Order{
+		Name: orderName,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	c.JSON(http.StatusOK, nil)
+}
 
-	newOrder := models.Order{
-		Name: deliveryName,
+func (o *OrderController) DeleteOrder(c *gin.Context) {
+	id := c.Query("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Id parameter is required"})
+		return
 	}
-	_, err = d.orderRepo.Add(c, newOrder)
+	_, err := o.orderRepo.Delete(c, id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	_, err = d.orderRepo.Get(c)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	// create order, call post and get methods from order repo
 	c.JSON(http.StatusOK, nil)
 }

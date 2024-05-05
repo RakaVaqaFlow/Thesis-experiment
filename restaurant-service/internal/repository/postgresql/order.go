@@ -5,8 +5,12 @@ import (
 	"database/sql"
 	"errors"
 
-	"delivery-service/internal/models"
-	"delivery-service/internal/repository"
+	"restaurant-service/internal/models"
+	"restaurant-service/internal/repository"
+
+	"github.com/jackc/pgconn"
+	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v4/pgxpool"
 )
 
 type dbOps interface {

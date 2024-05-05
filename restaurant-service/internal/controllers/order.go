@@ -2,9 +2,10 @@ package controllers
 
 import (
 	"net/http"
+	"strconv"
 
-	"delivery-service/internal/models"
-	"delivery-service/internal/repository"
+	"restaurant-service/internal/models"
+	"restaurant-service/internal/repository"
 
 	"github.com/gin-gonic/gin"
 )
@@ -38,12 +39,12 @@ func (o *OrderController) PostOrder(c *gin.Context) {
 }
 
 func (o *OrderController) GetOrder(c *gin.Context) {
-	_, err := o.orderRepo.Get(c)
+	orders, err := o.orderRepo.Get(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, nil)
+	c.JSON(http.StatusOK, gin.H{"orders": orders})
 }
 
 func (o *OrderController) UpdateOrder(c *gin.Context) {
@@ -68,7 +69,11 @@ func (o *OrderController) DeleteOrder(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Id parameter is required"})
 		return
 	}
-	_, err := o.orderRepo.Delete(c, id)
+	validID, err := strconv.ParseInt(id, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Id parameter should be integer"})
+	}
+	_, err = o.orderRepo.Delete(c, validID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

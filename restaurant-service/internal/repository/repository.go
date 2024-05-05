@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"delivery-service/internal/models"
+	"restaurant-service/internal/models"
 )
 
 var (

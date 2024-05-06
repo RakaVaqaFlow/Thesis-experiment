@@ -32,5 +32,6 @@ require (
 	golang.org/x/crypto v0.0.0-20210711020723-a769d52b0f97 // indirect
 	golang.org/x/sys v0.0.0-20210823070655-63515b42dcdf // indirect
 	golang.org/x/text v0.3.7 // indirect
+	golang.org/x/time v0.5.0
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )

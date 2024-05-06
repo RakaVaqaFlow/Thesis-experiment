@@ -13,11 +13,11 @@ import (
 )
 
 func main() {
-	dbHost := os.Getenv("DB_HOST")
-	dbPort := os.Getenv("DB_PORT")
-	dbUser := os.Getenv("DB_USER")
-	dbPass := os.Getenv("DB_PASSWORD")
-	dbName := os.Getenv("DB_NAME")
+	dbHost := os.Getenv("DEL_DB_HOST")
+	dbPort := os.Getenv("DEL_DB_PORT")
+	dbUser := os.Getenv("DEL_DB_USER")
+	dbPass := os.Getenv("DEL_DB_PASSWORD")
+	dbName := os.Getenv("DEL_DB_NAME")
 
 	ctx := context.Background()
 

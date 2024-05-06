@@ -1,35 +1,54 @@
-# Параметры для подключения к базе данных PostgreSQL
-PG_HOST=${DB_HOST}
-PG_PORT=${DB_PORT}
-PG_USER=${DB_USER}
-PG_PASSWORD=${DB_PASSWORD}
-PG_DATABASE=${DB_NAME}
-
-ifeq ($(POSTGRES_SETUP_TEST),)
-	POSTGRES_SETUP_TEST := user=$(PG_USER) password=$(PG_PASSWORD) dbname=$(PG_DATABASE) host=$(PG_HOST) port=$(PG_PORT) sslmode=disable
+ifeq ($(DEL_POSTGRES_SETUP),)
+	DEL_POSTGRES_SETUP := user=$(DEL_DB_USER) password=$(DEL_DB_PASSWORD) dbname=$(DEL_DB_NAME) host=$(DEL_DB_HOST) port=$(DEL_DB_PORT) sslmode=disable
 endif
 
-MIGRATION_FOLDER=$(CURDIR)/migrations
+ifeq ($(RES_POSTGRES_SETUP),)
+	RES_POSTGRES_SETUP := user=$(RES_DB_USER) password=$(RES_DB_PASSWORD) dbname=$(RES_DB_NAME) host=$(RES_DB_HOST) port=$(RES_DB_PORT) sslmode=disable
+endif
 
-.PHONY: migration-create
-migration-create:
-	goose -dir "$(MIGRATION_FOLDER)" create "$(name)" sql
+DEL_MIGRATION_FOLDER=$(CURDIR)/delivery-service/migrations
+RES_MIGRATION_FOLDER=$(CURDIR)/restaurant-service/migrations
 
-.PHONY: test-migration-up
-test-migration-up:
-	goose -dir "$(MIGRATION_FOLDER)" postgres "$(POSTGRES_SETUP_TEST)" up
+.PHONY: del-migration-create
+del-migration-create:
+	goose -dir "$(DEL_MIGRATION_FOLDER)" create "$(name)" sql
 
-.PHONY: test-migration-down
-test-migration-down:
-	goose -dir "$(MIGRATION_FOLDER)" postgres "$(POSTGRES_SETUP_TEST)" down
+.PHONY: res-migration-create
+res-migration-create:
+	goose -dir "$(RES_MIGRATION_FOLDER)" create "$(name)" sql
+
+.PHONY: del-migration-up
+del-migration-up:
+	goose -dir "$(DEL_MIGRATION_FOLDER)" postgres "$(DEL_POSTGRES_SETUP)" up
+
+.PHONY: del-migration-down
+del-migration-down:
+	goose -dir "$(DEL_MIGRATION_FOLDER)" postgres "$(DEL_POSTGRES_SETUP)" down
+
+.PHONY: res-migration-up
+res-migration-up:
+	goose -dir "$(RES_MIGRATION_FOLDER)" postgres "$(RES_POSTGRES_SETUP)" up
+
+.PHONY: res-migration-down
+res-migration-down:
+	goose -dir "$(RES_MIGRATION_FOLDER)" postgres "$(RES_POSTGRES_SETUP)" down
 
 	
 .PHONY: compose-up
 compose-up:
 	docker compose build
-	docker compose up -d postgres
+	docker compose up -d delivery-postgres
 	docker compose up -d delivery-service
+	docker compose up -d restaurant-postgres
+	docker compose up -d restaurant-service
 
 .PHONY: compose-rm
 compose-rm:
 	docker compose down
+
+.PHONY up-all:
+up-all:
+	make compose-up
+	make del-migration-up
+	make res-migration-up
+

@@ -1,6 +1,6 @@
 FROM golang:latest
 
-ENV SERVICE_PATH=delivery-service
+ENV SERVICE_PATH=restaurant-service
 
 WORKDIR /app
 
@@ -10,8 +10,8 @@ RUN go mod download
 
 COPY ${SERVICE_PATH} /app
 
-RUN go build -o delivery-service ./cmd/main.go
+RUN go build -o restaurant-service ./cmd/main.go
 
-EXPOSE 8080
+EXPOSE 8081
 
-CMD ["./delivery-service"]
+CMD ["./restaurant-service"]

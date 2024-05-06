@@ -1,31 +1,63 @@
 services:
-  postgres:
+  delivery-postgres:
     image: postgres:16
     environment:
-      POSTGRES_DB: ${DB_NAME}
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DEL_DB_NAME}
+      POSTGRES_USER: ${DEL_DB_USER}
+      POSTGRES_PASSWORD: ${DEL_DB_PASSWORD}
+    expose:
+    - "${DEL_DB_PORT}"
     networks:
       - mynetwork
     ports:
-      - "${DB_PORT}:${DB_PORT}"
+      - "${DEL_DB_PORT}:${DEL_DB_PORT}"
+  restaurant-postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${RES_DB_NAME}
+      POSTGRES_USER: ${RES_DB_USER}
+      POSTGRES_PASSWORD: ${RES_DB_PASSWORD}
+    expose:
+    - "${RES_DB_PORT}"
+    networks:
+      - mynetwork
+    ports:
+      - "${RES_DB_PORT}:${RES_DB_PORT}"
+    command: -p ${RES_DB_PORT}
   delivery-service:
     environment:
-      DB_HOST: postgres
-      DB_PORT: ${DB_PORT}
-      DB_USER: ${DB_USER}
-      DB_PASSWORD: ${DB_PASSWORD}
-      DB_NAME: ${DB_NAME}
+      DB_HOST: delivery-postgres
+      DB_PORT: ${DEL_DB_PORT}
+      DB_USER: ${DEL_DB_USER}
+      DB_PASSWORD: ${DEL_DB_PASSWORD}
+      DB_NAME: ${DEL_DB_NAME}
     build:
       context: .
       dockerfile: Dockerfile-delivery-service
     restart: always
     depends_on:
-      - postgres
+      - delivery-postgres
     networks:
       - mynetwork
     ports:
       - "8080:8080"
+  restaurant-service:
+    environment:
+      DB_HOST: restaurant-postgres
+      DB_PORT: ${RES_DB_PORT}
+      DB_USER: ${RES_DB_USER}
+      DB_PASSWORD: ${RES_DB_PASSWORD}
+      DB_NAME: ${RES_DB_NAME}
+    build:
+      context: .
+      dockerfile: Dockerfile-restaurant-service
+    restart: always
+    depends_on:
+      - restaurant-postgres
+    networks:
+      - mynetwork
+    ports:
+      - "8081:8081"
 
 networks:
   mynetwork:

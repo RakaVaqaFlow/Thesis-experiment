@@ -19,12 +19,13 @@ import (
 )
 
 var limiter *rate.Limiter
+var consulAddress = "127.0.0.1:8500"
 
-func initRateLimiter(rate float64, burst int) {
-	limiter = rate.NewLimiter(rate.Limit(rate), burst)
+func initRateLimiter(newRate float64, burst int) {
+	limiter = rate.NewLimiter(rate.Limit(newRate), burst)
 }
 
-func setupWatch(client *api.Client, key string, handler func(interface{})) {
+func setupWatch(address string, key string, handler func(uint64, interface{})) {
 	plan, err := watch.Parse(map[string]interface{}{
 		"type": "key",
 		"key":  key,
@@ -33,10 +34,12 @@ func setupWatch(client *api.Client, key string, handler func(interface{})) {
 		log.Fatalf("Failed to create watch plan for %s: %v", key, err)
 	}
 
-	plan.Handler = handler
+	plan.Handler = watch.HandlerFunc(func(idx uint64, data interface{}) {
+		handler(idx, data)
+	})
 
 	go func() {
-		if err := plan.Run(client.Address()); err != nil {
+		if err := plan.Run(address); err != nil {
 			log.Fatalf("Failed to run watch plan: %v", err)
 		}
 	}()
@@ -44,12 +47,13 @@ func setupWatch(client *api.Client, key string, handler func(interface{})) {
 
 func main() {
 	config := api.DefaultConfig()
-	consulClient, err := api.NewClient(config)
+	config.Address = consulAddress
+	_, err := api.NewClient(config)
 	if err != nil {
 		log.Fatalf("Error creating Consul client: %v", err)
 	}
 
-	setupWatch(consulClient, "rate-limiter/rate", func(data interface{}) {
+	setupWatch(consulAddress, "rate-limiter/rate", func(idx uint64, data interface{}) {
 		if kv, ok := data.(*api.KVPair); ok && kv != nil {
 			newRate, err := strconv.ParseFloat(string(kv.Value), 64)
 			if err == nil {
@@ -58,7 +62,7 @@ func main() {
 		}
 	})
 
-	setupWatch(consulClient, "rate-limiter/burst", func(data interface{}) {
+	setupWatch(consulAddress, "rate-limiter/burst", func(idx uint64, data interface{}) {
 		if kv, ok := data.(*api.KVPair); ok && kv != nil {
 			newBurst, err := strconv.Atoi(string(kv.Value))
 			if err == nil {

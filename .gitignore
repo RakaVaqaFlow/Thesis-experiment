@@ -22,3 +22,4 @@ go.work
 */.idea/
 .env
 env.bash
+*/.stack-work

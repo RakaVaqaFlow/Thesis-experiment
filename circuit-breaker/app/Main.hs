@@ -1,9 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 import Network.Wai
-import Network.HTTP.Types (status500)
+import Network.HTTP.Types
 import Network.Wai.Handler.Warp (run)
-import Control.Concurrent.STM
+import Control.Concurrent
 import Data.Time.Clock (getCurrentTime)
 import Lib 
 

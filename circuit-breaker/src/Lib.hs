@@ -6,11 +6,11 @@ module Lib
 
 import Control.Concurrent.STM
 import Control.Exception
-import Data.Time.Clock (UTCTime, getCurrentTime, addUTCTime, NominalDiffTime, diffUTCTime)
+import Data.Time.Clock (UTCTime, getCurrentTime, NominalDiffTime, diffUTCTime)
 import qualified Data.ByteString.Lazy.Char8 as BSL
-import GHC.Conc (unsafeIOToSTM)
 import Network.Wai
 import Network.HTTP.Types
+import Control.Concurrent.STM (atomically)
 
 data CircuitState = Closed | Open | HalfOpen
     deriving (Eq, Show)
@@ -53,8 +53,6 @@ initState timeout sleepWindow eRate pnmNum sRate slWinSize = do
         successesInHalfOpen = successesInHalfOpenVar
     }
 
-
-
 circuitBreakerMiddleware :: CircuitBreaker -> Middleware
 circuitBreakerMiddleware cb app req respond = do
     currentState <- readTVarIO (state cb)
@@ -71,10 +69,7 @@ circuitBreakerMiddleware cb app req respond = do
         HalfOpen -> handleHalfOpenState cb app req respond
         Closed -> handleClosedState cb app req respond
 
--- type Middleware = Application -> Application
--- type Application = Request -> (Response -> IO ResponseReceived) -> IO ResponseReceived
-
-handleHalfOpenState :: CircuitBreaker -> Application ->  Request -> (Response -> IO ResponseReceived) -> IO ResponseReceived
+handleHalfOpenState :: CircuitBreaker -> Application -> Request -> (Response -> IO ResponseReceived) -> IO ResponseReceived
 handleHalfOpenState cb app req respond = do
     let maxCalls = permittedNumberOfCallsInHalfOpenState (options cb)
     errors <- readTVarIO (errorsInHalfOpen cb)
@@ -86,9 +81,7 @@ handleHalfOpenState cb app req respond = do
                 Left _ -> do
                     recordResult cb False
                     respond (responseLBS status503 [] (BSL.pack "Service Unavailable"))
-                Right res -> do
-                    recordResult cb True
-                    res respond
+                Right res -> evaluateResponse cb res respond
         else do
             successRate <- calculateSuccessRate cb
             if successRate >= successRateThresholdInHalfOpenState (options cb)
@@ -96,7 +89,7 @@ handleHalfOpenState cb app req respond = do
                 else atomically $ writeTVar (state cb) Open >> resetFailureBuffer cb
             respond $ responseLBS status503 [] (BSL.pack "Service Unavailable")
 
-handleClosedState :: CircuitBreaker -> Application -> Application
+handleClosedState :: CircuitBreaker -> Application -> Request -> (Response -> IO ResponseReceived) -> IO ResponseReceived
 handleClosedState cb app req respond = do
     result <- tryRequest cb app req
     case result of
@@ -107,15 +100,23 @@ handleClosedState cb app req respond = do
                 then atomically $ writeTVar (state cb) Open >> resetFailureBuffer cb
                 else return ()
             respond (responseLBS status503 [] (BSL.pack "Service Unavailable"))
-        Right res -> do
-            recordResult cb True
-            res respond
+        Right res -> evaluateResponse cb res respond
 
 tryRequest :: CircuitBreaker -> Application -> Request -> IO (Either SomeException ((Response -> IO ResponseReceived) -> IO ResponseReceived))
 tryRequest cb app req = do
     currentTime <- getCurrentTime
     atomically $ writeTVar (lastAttemptedAt cb) currentTime
-    try $ app req
+    try (return $ app req)
+
+evaluateResponse :: CircuitBreaker -> ((Response -> IO ResponseReceived) -> IO ResponseReceived) -> (Response -> IO ResponseReceived) -> IO ResponseReceived
+evaluateResponse cb res respond = do
+    let wrappedRespond response = do
+            let respStatus = responseStatus response
+            if statusCode respStatus >= 500 || statusCode respStatus == 429
+                then recordResult cb False
+                else recordResult cb True
+            respond response
+    res wrappedRespond
 
 recordResult :: CircuitBreaker -> Bool -> IO ()
 recordResult cb success = do

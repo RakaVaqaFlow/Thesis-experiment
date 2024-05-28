@@ -23,8 +23,12 @@ dependencies:
 - base >= 4.7 && < 5
 - time
 - stm
+- http-types >= 0.12.2
 - http-client >= 0.5
 - http-client-tls
+- wai >= 3.2
+- warp >= 3.2
+- bytestring
 
 ghc-options:
 - -Wall

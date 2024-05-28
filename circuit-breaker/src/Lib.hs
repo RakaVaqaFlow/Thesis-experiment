@@ -1,173 +1,158 @@
 module Lib
     ( CircuitBreaker(..)
     , initState
-    , checkState
-    , recordFailure
-    , recordSuccess
+    , circuitBreakerMiddleware
     ) where
 
 import Control.Concurrent.STM
-import Data.Time.Clock (UTCTime, getCurrentTime, addUTCTime, NominalDiffTime)
+import Control.Exception
+import Data.Time.Clock (UTCTime, getCurrentTime, addUTCTime, NominalDiffTime, diffUTCTime)
+import qualified Data.ByteString.Lazy.Char8 as BSL
+import GHC.Conc (unsafeIOToSTM)
+import Network.Wai
+import Network.HTTP.Types
+import Control.Concurrent.STM (atomically)
+
 
 data CircuitState = Closed | Open | HalfOpen
     deriving (Eq, Show)
 
 data CircuitBreakerOptions = CircuitBreakerOptions {
-    timeout :: NominalDiffTime,
-    sleepWindow :: NominalDiffTime,
-    errorRateThreshold :: Double,
-    halpOpenPassingRequestsRateThreshold :: Double, 
-    successRateThreshold :: Double
+    timeout :: NominalDiffTime, -- таймаут запроса, по истечению которого он будет считаться неуспешным
+    sleepWindow :: NominalDiffTime, -- сколько выключатель спит в open state
+    errorRateThreshold :: Double, -- порог возможных ошибок
+    permittedNumberOfCallsInHalfOpenState :: Integer, -- количество запросов которые проходят в целевой сервис в half-open state
+    successRateThresholdInHalfOpenState :: Double, -- процент успешных запросов при котором cb переходит в состояние closed
+    slidingWindowSize :: Integer -- размер окна учитываемых запросов
 }
 
 data CircuitBreaker = CircuitBreaker {
-    state :: TVar CircuitState,
-    options :: CircuitBreakerOptions,
-    failureCount :: TVar Int,
-    
+    state :: TVar CircuitState, -- состояние выключателя
+    options :: CircuitBreakerOptions, -- опции выключателя
+    slidingWindow :: TVar [Bool], -- буфер запросов
+    position :: TVar Integer, -- позиция в буфере запросов
+    lastAttemptedAt :: TVar UTCTime, -- время последнего запроса
+    errorsInHalfOpen :: TVar Integer, -- кол-во ошибок в Half Open State
+    successesInHalfOpen :: TVar Integer -- кол-во успешных запросов в Half Open State 
 }
 
-initState :: Int -> NominalDiffTime -> IO CircuitBreaker
-initState threshold retry = atomically $ do
-    stateVar <- newTVar Closed
-    failureCountVar <- newTVar 0
+initState :: Integer -> Integer -> Double -> Integer -> Double -> Integer -> IO CircuitBreaker
+initState timeout sleepWindow eRate pnmNum sRate slWinSize = do
+    currentTime <- getCurrentTime
+    stateVar <- newTVarIO Closed
+    slidingWindowVar <- newTVarIO []
+    positionVar <- newTVarIO 0
+    lastAttemptedVar <- newTVarIO currentTime
+    errorsInHalfOpenVar <- newTVarIO 0
+    successesInHalfOpenVar <- newTVarIO 0
     return CircuitBreaker {
         state = stateVar,
-        failureThreshold = threshold,
-        failureCount = failureCountVar,
-        retryTime = retry
+        options = CircuitBreakerOptions (fromInteger timeout) (fromInteger sleepWindow) eRate pnmNum sRate slWinSize,
+        slidingWindow = slidingWindowVar,
+        position = positionVar,
+        lastAttemptedAt = lastAttemptedVar,
+        errorsInHalfOpen = errorsInHalfOpenVar,
+        successesInHalfOpen = successesInHalfOpenVar
     }
 
-checkState :: CircuitBreaker -> IO CircuitState
-checkState cb = readTVarIO (state cb)
+-- type Middleware = Application -> Application
+-- type Application = Request -> (Response -> IO ResponseReceived) -> IO ResponseReceived
 
-recordFailure :: CircuitBreaker -> IO ()
-recordFailure cb = do
-    -- Get the current time outside the STM transaction
+circuitBreakerMiddleware :: CircuitBreaker -> Middleware
+circuitBreakerMiddleware cb app req respond = do
+    currentState <- readTVarIO (state cb)
     currentTime <- getCurrentTime
-    atomically $ do
-        fCount <- readTVar (failureCount cb)
-        if fCount >= failureThreshold cb - 1
-            then do
-                -- Use the pre-fetched currentTime inside the STM transaction
-                writeTVar (state cb) (Open $ addUTCTime (retryTime cb) currentTime)
-                writeTVar (failureCount cb) 0
-            else modifyTVar' (failureCount cb) (+1)
+    lastAttempt <- readTVarIO (lastAttemptedAt cb)
+    
+    case currentState of
+        Open -> if diffUTCTime currentTime lastAttempt > sleepWindow (options cb)
+                  then do -- можно переходить в half-open state, поскольку прошлом время сна
+                    atomically $ writeTVar (state cb) HalfOpen 
+                    resetHalfOpenValues cb
+                    handleHalfOpenState cb app req respond
+                  else respond $ responseLBS status429 [] (BSL.pack "Too Many Requests")
+        HalfOpen -> handleHalfOpenState cb app req respond
+        Closed -> handleClosedState cb app req respond
+
+handleHalfOpenState :: CircuitBreaker -> Application -> Application
+handleHalfOpenState cb app req respond = do
+    let maxCalls = permittedNumberOfCallsInHalfOpenState (options cb)
+    errors <- readTVarIO (errorsInHalfOpen cb)
+    successes <- readTVarIO (successesInHalfOpen cb)
+    if errors + successes < maxCalls
+        then do
+            result <- tryRequest cb app req
+            case result of
+                Left _ -> recordResult cb False >> respond (responseLBS status503 [] ( BSL.pack "Service Unavailable"))
+                Right res -> recordResult cb True >> return res
+        else do
+            successRate <- calculateSuccessRate cb
+            if successRate >= successRateThresholdInHalfOpenState (options cb)
+                then atomically $ writeTVar (state cb) Closed
+                else atomically $ writeTVar (state cb) Open >> resetFailureBuffer cb
+            respond $ responseLBS status503 [] (BSL.pack "Service Unavailable")
+
+handleClosedState :: CircuitBreaker -> Application -> Application
+handleClosedState cb app req respond = do
+    result <- tryRequest cb app req
+    case result of
+        Left _ -> do
+            recordResult cb False
+            errorRate <- calculateErrorRate cb
+            if errorRate >= errorRateThreshold (options cb)
+                then atomically $ writeTVar (state cb) Open >> resetFailureBuffer cb
+                else return ()
+            respond (responseLBS status503 [] (BSL.pack "Service Unavailable"))
+        Right res -> do
+            recordResult cb True
+            respond res
+
+tryRequest :: CircuitBreaker -> Application -> Request -> IO (Either SomeException ResponseReceived)
+tryRequest cb app req = do
+    currentTime <- getCurrentTime
+    atomically $ writeTVar (lastAttemptedAt cb) currentTime
+    try $ app req
+
+recordResult :: CircuitBreaker -> Bool -> IO ()
+recordResult cb success = do
+    currentState <- readTVarIO (state cb)
+    case currentState of 
+        HalfOpen -> do
+            if success
+                then atomically $ do
+                    successes <- readTVar (successesInHalfOpen cb)
+                    writeTVar (successesInHalfOpen cb) (successes + 1)
+                else atomically $ do
+                    errors <- readTVar (errorsInHalfOpen cb)
+                    writeTVar (errorsInHalfOpen cb) (errors + 1)
+        Closed -> atomically $ do
+            buffer <- readTVar (slidingWindow cb)
+            pos <- readTVar (position cb)
+            let newPos = (pos + 1) `mod` fromIntegral (slidingWindowSize $ options cb)
+            let newBuffer = take (length buffer) $ drop 1 buffer ++ [success]
+            writeTVar (slidingWindow cb) newBuffer
+            writeTVar (position cb) newPos
+
+calculateErrorRate :: CircuitBreaker -> IO Double
+calculateErrorRate cb = atomically $ do
+    buffer <- readTVar (slidingWindow cb)
+    let total = length buffer
+        failures = length $ filter not buffer
+    return $ (fromIntegral failures / fromIntegral total) * 100
+
+calculateSuccessRate :: CircuitBreaker -> IO Double
+calculateSuccessRate cb = atomically $ do
+    buffer <- readTVar (slidingWindow cb)
+    let total = length buffer
+        successes = length $ filter id buffer
+    return $ (fromIntegral successes / fromIntegral total) * 100
+
+resetFailureBuffer :: CircuitBreaker -> STM ()
+resetFailureBuffer cb = writeTVar (slidingWindow cb) (replicate (length $ slidingWindow cb) True)
 
 
-recordSuccess :: CircuitBreaker -> IO ()
-recordSuccess cb = atomically $ do
-    writeTVar (state cb) Closed
-    writeTVar (failureCount cb) 0
+resetHalfOpenValues :: CircuitBreaker -> IO ()
+resetHalfOpenValues cb = atomically $ do
+    writeTVar (errorsInHalfOpen cb) 0
+    writeTVar (successesInHalfOpen cb) 0
 
--- {-# LANGUAGE FlexibleContexts #-}
--- {-# LANGUAGE ScopedTypeVariables #-}
--- {-# LANGUAGE DeriveDataTypeable #-}
-
--- -- | Module containing circuit breaker functionality, which is the ability to open a circuit once a number of failures have occurred, thereby preventing later calls from attempting to make unsuccessful calls.
--- -- | Often this is useful if the underlying service were to repeatedly time out, so as to reduce the number of calls inflight holding up upstream callers.
--- module Glue.CircuitBreaker(
---     CircuitBreakerOptions
---   , CircuitBreakerState
---   , CircuitBreakerException(..)
---   , combineCircuitBreakerStates
---   , isCircuitBreakerOpen
---   , isCircuitBreakerClosed
---   , defaultCircuitBreakerOptions
---   , circuitBreaker
---   , maxBreakerFailures
---   , resetTimeoutSecs
---   , breakerDescription
--- ) where
-
--- import Data.Foldable hiding (or, and)
--- import Data.Traversable
--- import Data.Monoid
--- import Control.Exception.Lifted
--- import Control.Monad.Base
--- import Control.Monad.Trans.Control
--- import Data.IORef.Lifted
--- import Data.Time.Clock.POSIX
--- import Data.Typeable
--- import Glue.Types
-
--- -- | Options for determining behaviour of circuit breaking services.
--- data CircuitBreakerOptions = CircuitBreakerOptions {
---     maxBreakerFailures  :: Int        -- ^ How many times the underlying service must fail in the given window before the circuit opens.
---   , resetTimeoutSecs    :: Int        -- ^ The window of time in which the underlying service must fail for the circuit to open.
---   , breakerDescription  :: String     -- ^ Description that is attached to the failure so as to identify the particular circuit.
--- }
-
--- -- | Defaulted options for the circuit breaker with 3 failures over 60 seconds.
--- defaultCircuitBreakerOptions :: CircuitBreakerOptions
--- defaultCircuitBreakerOptions = CircuitBreakerOptions { maxBreakerFailures = 3, resetTimeoutSecs = 60, breakerDescription = "Circuit breaker open." }
-
--- -- | Status indicating if the circuit is open.
--- data BreakerStatus = BreakerClosed Int | BreakerOpen Int deriving (Eq, Show)
-
--- -- | Representation of the state the circuit breaker is currently in.
--- data CircuitBreakerState = CircuitBreakerState [IORef BreakerStatus]
-
--- -- | Exception thrown when the circuit is open.
--- data CircuitBreakerException = CircuitBreakerException String deriving (Eq, Show, Typeable)
--- instance Exception CircuitBreakerException
-
--- -- | Combines multiple states together.
--- combineCircuitBreakerStates :: (Foldable t) => t CircuitBreakerState -> CircuitBreakerState
--- combineCircuitBreakerStates states = CircuitBreakerState $ foldMap (\(CircuitBreakerState refs) -> refs) states
-
--- -- | Determines if a specific status is open.
--- isStatusOpen :: BreakerStatus -> Bool
--- isStatusOpen (BreakerOpen _)    = True
--- isStatusOpen (BreakerClosed _)  = False
-
--- -- | Determines if a specific status is closed.
--- isStatusClosed :: BreakerStatus -> Bool
--- isStatusClosed (BreakerOpen _)    = False
--- isStatusClosed (BreakerClosed _)  = True
-
--- -- | Determines if a circuit breaker is open.
--- isCircuitBreakerOpen :: (MonadBaseControl IO m) => CircuitBreakerState -> m Bool
--- isCircuitBreakerOpen (CircuitBreakerState states) = fmap or $ traverse (\ref -> fmap isStatusOpen $ readIORef ref) states
-
--- -- | Determines if a circuit breaker is closed.
--- isCircuitBreakerClosed :: (MonadBaseControl IO m) => CircuitBreakerState -> m Bool
--- isCircuitBreakerClosed (CircuitBreakerState states) = fmap and $ traverse (\ref -> fmap isStatusClosed $ readIORef ref) states
-
--- -- TODO: Check that values within m aren't lost on a successful call.
--- -- | Circuit breaking services can be constructed with this function.
--- circuitBreaker :: (MonadBaseControl IO m, MonadBaseControl IO n) 
---                => CircuitBreakerOptions       -- ^ Options for specifying the circuit breaker behaviour.
---                -> BasicService m a b          -- ^ Service to protect with the circuit breaker.
---                -> n (CircuitBreakerState, BasicService m a b)
--- circuitBreaker options service = 
---   let getCurrentTime              = liftBase $ round `fmap` getPOSIXTime
---       failureMax                  = maxBreakerFailures options
---       callIfClosed request ref    = bracketOnError (return ()) (\_ -> incErrors ref) (\_ -> service request)
---       canaryCall request ref      = do
---                                       result <- callIfClosed request ref
---                                       writeIORef ref $ BreakerClosed 0
---                                       return result
---       incErrors ref               = do
---                                       currentTime <- getCurrentTime
---                                       atomicModifyIORef' ref $ \status -> case status of
---                                         (BreakerClosed errorCount) -> (if errorCount >= failureMax then BreakerOpen (currentTime + (resetTimeoutSecs options)) else BreakerClosed (errorCount + 1), ())
---                                         other                             -> (other, ())
-                                      
---       failingCall                 = throw $ CircuitBreakerException $ breakerDescription options
---       callIfOpen request ref      = do
---                                       currentTime <- getCurrentTime
---                                       canaryRequest <- atomicModifyIORef' ref $ \status -> case status of 
---                                                               (BreakerClosed _)  -> (status, False)
---                                                               (BreakerOpen time) -> if currentTime > time then ((BreakerOpen (currentTime + (resetTimeoutSecs options))), True) else (status, False)
-                                      
---                                       if canaryRequest then canaryCall request ref else failingCall
---       breakerService ref request  = do
---                                       status <- readIORef ref
---                                       case status of 
---                                         (BreakerClosed _)  -> callIfClosed request ref
---                                         (BreakerOpen _)    -> callIfOpen request ref
-                                      
---   in do
---         ref <- newIORef $ BreakerClosed 0
---         return (CircuitBreakerState [ref], breakerService ref)

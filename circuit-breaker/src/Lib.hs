@@ -11,8 +11,6 @@ import qualified Data.ByteString.Lazy.Char8 as BSL
 import GHC.Conc (unsafeIOToSTM)
 import Network.Wai
 import Network.HTTP.Types
-import Control.Concurrent.STM (atomically)
-
 
 data CircuitState = Closed | Open | HalfOpen
     deriving (Eq, Show)
@@ -40,7 +38,7 @@ initState :: Integer -> Integer -> Double -> Integer -> Double -> Integer -> IO 
 initState timeout sleepWindow eRate pnmNum sRate slWinSize = do
     currentTime <- getCurrentTime
     stateVar <- newTVarIO Closed
-    slidingWindowVar <- newTVarIO []
+    slidingWindowVar <- newTVarIO (replicate (fromIntegral slWinSize) True)
     positionVar <- newTVarIO 0
     lastAttemptedVar <- newTVarIO currentTime
     errorsInHalfOpenVar <- newTVarIO 0
@@ -55,8 +53,7 @@ initState timeout sleepWindow eRate pnmNum sRate slWinSize = do
         successesInHalfOpen = successesInHalfOpenVar
     }
 
--- type Middleware = Application -> Application
--- type Application = Request -> (Response -> IO ResponseReceived) -> IO ResponseReceived
+
 
 circuitBreakerMiddleware :: CircuitBreaker -> Middleware
 circuitBreakerMiddleware cb app req respond = do
@@ -66,7 +63,7 @@ circuitBreakerMiddleware cb app req respond = do
     
     case currentState of
         Open -> if diffUTCTime currentTime lastAttempt > sleepWindow (options cb)
-                  then do -- можно переходить в half-open state, поскольку прошлом время сна
+                  then do -- можно переходить в half-open state, поскольку прошло время сна
                     atomically $ writeTVar (state cb) HalfOpen 
                     resetHalfOpenValues cb
                     handleHalfOpenState cb app req respond
@@ -74,7 +71,10 @@ circuitBreakerMiddleware cb app req respond = do
         HalfOpen -> handleHalfOpenState cb app req respond
         Closed -> handleClosedState cb app req respond
 
-handleHalfOpenState :: CircuitBreaker -> Application -> Application
+-- type Middleware = Application -> Application
+-- type Application = Request -> (Response -> IO ResponseReceived) -> IO ResponseReceived
+
+handleHalfOpenState :: CircuitBreaker -> Application ->  Request -> (Response -> IO ResponseReceived) -> IO ResponseReceived
 handleHalfOpenState cb app req respond = do
     let maxCalls = permittedNumberOfCallsInHalfOpenState (options cb)
     errors <- readTVarIO (errorsInHalfOpen cb)
@@ -83,8 +83,12 @@ handleHalfOpenState cb app req respond = do
         then do
             result <- tryRequest cb app req
             case result of
-                Left _ -> recordResult cb False >> respond (responseLBS status503 [] ( BSL.pack "Service Unavailable"))
-                Right res -> recordResult cb True >> return res
+                Left _ -> do
+                    recordResult cb False
+                    respond (responseLBS status503 [] (BSL.pack "Service Unavailable"))
+                Right res -> do
+                    recordResult cb True
+                    res respond
         else do
             successRate <- calculateSuccessRate cb
             if successRate >= successRateThresholdInHalfOpenState (options cb)
@@ -105,9 +109,9 @@ handleClosedState cb app req respond = do
             respond (responseLBS status503 [] (BSL.pack "Service Unavailable"))
         Right res -> do
             recordResult cb True
-            respond res
+            res respond
 
-tryRequest :: CircuitBreaker -> Application -> Request -> IO (Either SomeException ResponseReceived)
+tryRequest :: CircuitBreaker -> Application -> Request -> IO (Either SomeException ((Response -> IO ResponseReceived) -> IO ResponseReceived))
 tryRequest cb app req = do
     currentTime <- getCurrentTime
     atomically $ writeTVar (lastAttemptedAt cb) currentTime
@@ -129,7 +133,7 @@ recordResult cb success = do
             buffer <- readTVar (slidingWindow cb)
             pos <- readTVar (position cb)
             let newPos = (pos + 1) `mod` fromIntegral (slidingWindowSize $ options cb)
-            let newBuffer = take (length buffer) $ drop 1 buffer ++ [success]
+            let newBuffer = take (fromIntegral $ slidingWindowSize $ options cb) $ drop 1 buffer ++ [success]
             writeTVar (slidingWindow cb) newBuffer
             writeTVar (position cb) newPos
 
@@ -148,11 +152,9 @@ calculateSuccessRate cb = atomically $ do
     return $ (fromIntegral successes / fromIntegral total) * 100
 
 resetFailureBuffer :: CircuitBreaker -> STM ()
-resetFailureBuffer cb = writeTVar (slidingWindow cb) (replicate (length $ slidingWindow cb) True)
-
+resetFailureBuffer cb = writeTVar (slidingWindow cb) (replicate (fromIntegral $ slidingWindowSize $ options cb) True)
 
 resetHalfOpenValues :: CircuitBreaker -> IO ()
 resetHalfOpenValues cb = atomically $ do
     writeTVar (errorsInHalfOpen cb) 0
     writeTVar (successesInHalfOpen cb) 0
-

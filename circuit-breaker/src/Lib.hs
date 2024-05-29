@@ -10,7 +10,6 @@ import Data.Time.Clock (UTCTime, getCurrentTime, NominalDiffTime, diffUTCTime)
 import qualified Data.ByteString.Lazy.Char8 as BSL
 import Network.Wai
 import Network.HTTP.Types
-import Control.Concurrent.STM (atomically)
 
 data CircuitState = Closed | Open | HalfOpen
     deriving (Eq, Show)

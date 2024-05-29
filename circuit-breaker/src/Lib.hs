@@ -21,7 +21,8 @@ data CircuitBreakerOptions = CircuitBreakerOptions {
     errorRateThreshold :: Double, -- порог возможных ошибок
     permittedNumberOfCallsInHalfOpenState :: Integer, -- количество запросов которые проходят в целевой сервис в half-open state
     successRateThresholdInHalfOpenState :: Double, -- процент успешных запросов при котором cb переходит в состояние closed
-    slidingWindowSize :: Integer -- размер окна учитываемых запросов
+    slidingWindowSize :: Integer, -- размер окна учитываемых запросов
+    enableLogging :: Bool -- логировать или не логировать операции
 }
 
 data CircuitBreaker = CircuitBreaker {
@@ -34,8 +35,16 @@ data CircuitBreaker = CircuitBreaker {
     successesInHalfOpen :: TVar Integer -- кол-во успешных запросов в Half Open State 
 }
 
-initState :: Integer -> Integer -> Double -> Integer -> Double -> Integer -> IO CircuitBreaker
-initState timeout sleepWindow eRate pnmNum sRate slWinSize = do
+initState 
+    :: Integer 
+    -> Integer 
+    -> Double 
+    -> Integer 
+    -> Double 
+    -> Integer
+    -> Bool 
+    -> IO CircuitBreaker
+initState timeout sleepWindow eRate pnmNum sRate slWinSize enableLog = do
     currentTime <- getCurrentTime
     stateVar <- newTVarIO Closed
     slidingWindowVar <- newTVarIO (replicate (fromIntegral slWinSize) True)
@@ -45,7 +54,7 @@ initState timeout sleepWindow eRate pnmNum sRate slWinSize = do
     successesInHalfOpenVar <- newTVarIO 0
     return CircuitBreaker {
         state = stateVar,
-        options = CircuitBreakerOptions (fromInteger timeout) (fromInteger sleepWindow) eRate pnmNum sRate slWinSize,
+        options = CircuitBreakerOptions (fromInteger timeout) (fromInteger sleepWindow) eRate pnmNum sRate slWinSize enableLog,
         slidingWindow = slidingWindowVar,
         position = positionVar,
         lastAttemptedAt = lastAttemptedVar,
@@ -61,7 +70,7 @@ circuitBreakerMiddleware cb app req respond = do
     
     case currentState of
         Open -> if diffUTCTime currentTime lastAttempt > sleepWindow (options cb)
-                  then do -- можно переходить в half-open state, поскольку прошло время сна
+                  then do
                     atomically $ writeTVar (state cb) HalfOpen 
                     resetHalfOpenValues cb
                     handleHalfOpenState cb app req respond
@@ -69,7 +78,12 @@ circuitBreakerMiddleware cb app req respond = do
         HalfOpen -> handleHalfOpenState cb app req respond
         Closed -> handleClosedState cb app req respond
 
-handleHalfOpenState :: CircuitBreaker -> Application -> Request -> (Response -> IO ResponseReceived) -> IO ResponseReceived
+handleHalfOpenState 
+    :: CircuitBreaker 
+    -> Application 
+    -> Request 
+    -> (Response -> IO ResponseReceived) 
+    -> IO ResponseReceived
 handleHalfOpenState cb app req respond = do
     let maxCalls = permittedNumberOfCallsInHalfOpenState (options cb)
     errors <- readTVarIO (errorsInHalfOpen cb)
@@ -89,7 +103,12 @@ handleHalfOpenState cb app req respond = do
                 else atomically $ writeTVar (state cb) Open >> resetFailureBuffer cb
             respond $ responseLBS status503 [] (BSL.pack "Service Unavailable")
 
-handleClosedState :: CircuitBreaker -> Application -> Request -> (Response -> IO ResponseReceived) -> IO ResponseReceived
+handleClosedState 
+    :: CircuitBreaker 
+    -> Application 
+    -> Request 
+    -> (Response -> IO ResponseReceived) 
+    -> IO ResponseReceived
 handleClosedState cb app req respond = do
     result <- tryRequest cb app req
     case result of
@@ -102,13 +121,21 @@ handleClosedState cb app req respond = do
             respond (responseLBS status503 [] (BSL.pack "Service Unavailable"))
         Right res -> evaluateResponse cb res respond
 
-tryRequest :: CircuitBreaker -> Application -> Request -> IO (Either SomeException ((Response -> IO ResponseReceived) -> IO ResponseReceived))
+tryRequest 
+    :: CircuitBreaker 
+    -> Application 
+    -> Request 
+    -> IO (Either SomeException ((Response -> IO ResponseReceived) -> IO ResponseReceived))
 tryRequest cb app req = do
     currentTime <- getCurrentTime
     atomically $ writeTVar (lastAttemptedAt cb) currentTime
     try (return $ app req)
 
-evaluateResponse :: CircuitBreaker -> ((Response -> IO ResponseReceived) -> IO ResponseReceived) -> (Response -> IO ResponseReceived) -> IO ResponseReceived
+evaluateResponse 
+    :: CircuitBreaker 
+    -> ((Response -> IO ResponseReceived) -> IO ResponseReceived) 
+    -> (Response -> IO ResponseReceived) 
+    -> IO ResponseReceived
 evaluateResponse cb res respond = do
     let wrappedRespond response = do
             let respStatus = responseStatus response

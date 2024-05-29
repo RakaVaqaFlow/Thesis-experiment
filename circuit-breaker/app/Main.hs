@@ -14,6 +14,6 @@ app _ respond = do
 
 main :: IO ()
 main = do
-    cb <- initState 1 5 50.0 2 75.0 10 -- Initialize with arbitrary values for demo
+    cb <- initState 1 5 50.0 2 75.0 10 False-- Initialize with arbitrary values for demo
     let wrappedApp = circuitBreakerMiddleware cb app
     run 8080 wrappedApp

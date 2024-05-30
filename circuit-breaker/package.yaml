@@ -29,6 +29,7 @@ dependencies:
 - wai >= 3.2
 - warp >= 3.2
 - bytestring
+- random
 
 ghc-options:
 - -Wall

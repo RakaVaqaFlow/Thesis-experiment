@@ -9,7 +9,10 @@ import Control.Exception
 import Data.Time.Clock (UTCTime, getCurrentTime, NominalDiffTime, diffUTCTime)
 import qualified Data.ByteString.Lazy.Char8 as BSL
 import Network.Wai
+import Data.Time.Format
 import Network.HTTP.Types
+import Control.Monad (when)
+import System.IO (hPutStrLn, stderr)
 
 data CircuitState = Closed | Open | HalfOpen
     deriving (Eq, Show)
@@ -34,14 +37,14 @@ data CircuitBreaker = CircuitBreaker {
     successesInHalfOpen :: TVar Integer -- кол-во успешных запросов в Half Open State 
 }
 
-initState 
-    :: Integer 
-    -> Integer 
-    -> Double 
-    -> Integer 
-    -> Double 
+initState
+    :: Integer
     -> Integer
-    -> Bool 
+    -> Double
+    -> Integer
+    -> Double
+    -> Integer
+    -> Bool
     -> IO CircuitBreaker
 initState timeout sleepWindow eRate pnmNum sRate slWinSize enableLog = do
     currentTime <- getCurrentTime
@@ -61,27 +64,45 @@ initState timeout sleepWindow eRate pnmNum sRate slWinSize enableLog = do
         successesInHalfOpen = successesInHalfOpenVar
     }
 
+logStateChange :: Bool -> String -> CircuitState -> CircuitState -> IO ()
+logStateChange enableLogging message oldState newState = do
+    currentTime <- getCurrentTime
+    when enableLogging $
+        putStrLn $ "[ " 
+            ++ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" currentTime ++ " ] " 
+            ++ message ++ ": " 
+            ++ show oldState ++ " -> " ++ show newState
+
+setState :: CircuitBreaker -> CircuitState -> IO ()
+setState cb newState = do
+    oldState <- atomically $ do
+        oldState <- readTVar (state cb)
+        writeTVar (state cb) newState
+        return oldState
+    let enableLog = enableLogging (options cb)
+    logStateChange enableLog "State change" oldState newState
+
 circuitBreakerMiddleware :: CircuitBreaker -> Middleware
 circuitBreakerMiddleware cb app req respond = do
     currentState <- readTVarIO (state cb)
     currentTime <- getCurrentTime
     lastAttempt <- readTVarIO (lastAttemptedAt cb)
-    
+
     case currentState of
         Open -> if diffUTCTime currentTime lastAttempt > sleepWindow (options cb)
                   then do
-                    atomically $ writeTVar (state cb) HalfOpen 
+                    setState cb HalfOpen
                     resetHalfOpenValues cb
                     handleHalfOpenState cb app req respond
                   else respond $ responseLBS status429 [] (BSL.pack "Too Many Requests")
         HalfOpen -> handleHalfOpenState cb app req respond
         Closed -> handleClosedState cb app req respond
 
-handleHalfOpenState 
-    :: CircuitBreaker 
-    -> Application 
-    -> Request 
-    -> (Response -> IO ResponseReceived) 
+handleHalfOpenState
+    :: CircuitBreaker
+    -> Application
+    -> Request
+    -> (Response -> IO ResponseReceived)
     -> IO ResponseReceived
 handleHalfOpenState cb app req respond = do
     let maxCalls = permittedNumberOfCallsInHalfOpenState (options cb)
@@ -93,20 +114,22 @@ handleHalfOpenState cb app req respond = do
             case result of
                 Left _ -> do
                     recordResult cb False
-                    respond (responseLBS status503 [] (BSL.pack "Service Unavailable"))
+                    respond (responseLBS status429 [] (BSL.pack "Too Many Requests"))
                 Right res -> evaluateResponse cb res respond
         else do
             successRate <- calculateSuccessRate cb
             if successRate >= successRateThresholdInHalfOpenState (options cb)
-                then atomically $ writeTVar (state cb) Closed
-                else atomically $ writeTVar (state cb) Open >> resetFailureBuffer cb
-            respond $ responseLBS status503 [] (BSL.pack "Service Unavailable")
+                then setState cb Closed
+                else do
+                    setState cb Open
+                    atomically $ resetFailureBuffer cb
+            respond $ responseLBS status429 [] (BSL.pack "Too Many Requests")
 
-handleClosedState 
-    :: CircuitBreaker 
-    -> Application 
-    -> Request 
-    -> (Response -> IO ResponseReceived) 
+handleClosedState
+    :: CircuitBreaker
+    -> Application
+    -> Request
+    -> (Response -> IO ResponseReceived)
     -> IO ResponseReceived
 handleClosedState cb app req respond = do
     result <- tryRequest cb app req
@@ -115,25 +138,27 @@ handleClosedState cb app req respond = do
             recordResult cb False
             errorRate <- calculateErrorRate cb
             if errorRate >= errorRateThreshold (options cb)
-                then atomically $ writeTVar (state cb) Open >> resetFailureBuffer cb
+                then do
+                    setState cb Open
+                    atomically $ resetFailureBuffer cb
                 else return ()
-            respond (responseLBS status503 [] (BSL.pack "Service Unavailable"))
+            respond (responseLBS status429 [] (BSL.pack "Too Many Requests"))
         Right res -> evaluateResponse cb res respond
 
-tryRequest 
-    :: CircuitBreaker 
-    -> Application 
-    -> Request 
+tryRequest
+    :: CircuitBreaker
+    -> Application
+    -> Request
     -> IO (Either SomeException ((Response -> IO ResponseReceived) -> IO ResponseReceived))
 tryRequest cb app req = do
     currentTime <- getCurrentTime
     atomically $ writeTVar (lastAttemptedAt cb) currentTime
     try (return $ app req)
 
-evaluateResponse 
-    :: CircuitBreaker 
-    -> ((Response -> IO ResponseReceived) -> IO ResponseReceived) 
-    -> (Response -> IO ResponseReceived) 
+evaluateResponse
+    :: CircuitBreaker
+    -> ((Response -> IO ResponseReceived) -> IO ResponseReceived)
+    -> (Response -> IO ResponseReceived)
     -> IO ResponseReceived
 evaluateResponse cb res respond = do
     let wrappedRespond response = do
@@ -142,11 +167,22 @@ evaluateResponse cb res respond = do
                 then recordResult cb False
                 else recordResult cb True
             respond response
-    res wrappedRespond
+    currentState <- readTVarIO (state cb)
+    case currentState of 
+        Closed -> do
+            errorRate <- calculateErrorRate cb
+            if errorRate >= errorRateThreshold (options cb)
+                then do
+                    setState cb Open
+                    atomically $ resetFailureBuffer cb
+                else return ()
+            res wrappedRespond
+        _ -> res wrappedRespond
 
 recordResult :: CircuitBreaker -> Bool -> IO ()
 recordResult cb success = do
     currentState <- readTVarIO (state cb)
+    logInfo cb
     case currentState of 
         HalfOpen -> do
             if success
@@ -185,3 +221,13 @@ resetHalfOpenValues :: CircuitBreaker -> IO ()
 resetHalfOpenValues cb = atomically $ do
     writeTVar (errorsInHalfOpen cb) 0
     writeTVar (successesInHalfOpen cb) 0
+
+
+logInfo :: CircuitBreaker -> IO()
+logInfo cb = do
+    currentState <- readTVarIO (state cb)
+    currentTime <- getCurrentTime
+    successRate <- calculateSuccessRate cb
+    pos <- readTVarIO (position cb)
+    putStrLn $ "[ " ++formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" currentTime ++ " ] " ++ show currentState ++ " " ++ show successRate
+    
